@@ -1,0 +1,36 @@
+# Raspberry Pi Tracker Configuration - Headless Mode
+
+# Server connection
+server:
+  url: "http://192.168.4.215:8000"  # CHANGE THIS TO YOUR SERVER IP!
+  rpi_id: "default"
+  heartbeat_interval: 30  # Seconds between heartbeats
+  command_poll_interval: 2  # Seconds between command checks
+
+# Camera settings
+camera:
+  width: 2304
+  height: 1296
+  fps: 30  # High capture FPS for quality
+  stream_fps: 5  # FPS for dashboard streaming (very low - saves bandwidth)
+  stream_quality: 50  # JPEG quality for streaming (0-100, lower = smaller files)
+  
+# Detection settings
+detection:
+  scale: 0.25  # Heavy downscale for YOLO (576x324 detection size)
+  confidence: 0.5
+  check_interval: 1.0  # Check every 1 second only
+
+# Tripwires (managed by server, but stored locally as fallback)
+tripwires:
+  outer_x: 800
+  inner_x: 1800
+
+# Capture settings
+capture:
+  burst_size: 10  # Number of images per burst
+  burst_interval: 0.2  # 200ms between captures
+  event_cooldown: 3.0  # 3s before next event
+
+# Model path
+model_path: "models/yolov8n.onnx"
