@@ -4,6 +4,8 @@ API Client - Lightweight communication with server
 """
 import cv2
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import numpy as np
 from typing import List, Optional, Dict
 from datetime import datetime
@@ -15,6 +17,21 @@ class ServerClient:
         self.server_url = server_url.rstrip('/')
         self.rpi_id = rpi_id
         self.session = requests.Session()  # Reuse connections
+        
+        # Configure connection pooling to prevent overwhelming the server
+        # Limit to 2 connections per host to avoid connection exhaustion
+        adapter = HTTPAdapter(
+            pool_connections=1,  # Number of connection pools to cache
+            pool_maxsize=2,      # Max connections per pool (prevents overwhelming server)
+            max_retries=Retry(
+                total=2,
+                backoff_factor=0.3,
+                status_forcelist=[500, 502, 503, 504],
+                allowed_methods=["GET", "POST"]
+            )
+        )
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
     
     def send_heartbeat(self, status: str, uptime: int) -> bool:
         """Send heartbeat to server"""
@@ -70,11 +87,23 @@ class ServerClient:
             )
             
             if response.status_code == 200:
-                return response.json()
+                try:
+                    return response.json()
+                except Exception as e:
+                    print(f"ERROR: Failed to parse server response: {e}")
+                    return {"status": "error", "message": f"JSON parse error: {e}"}
             else:
-                return {"status": "error"}
+                print(f"ERROR: Server returned status {response.status_code}")
+                return {"status": "error", "message": f"HTTP {response.status_code}"}
+        except requests.exceptions.Timeout:
+            print("ERROR: Request to server timed out")
+            return {"status": "error", "message": "Request timeout"}
+        except requests.exceptions.ConnectionError as e:
+            print(f"ERROR: Connection to server failed: {e}")
+            return {"status": "error", "message": "Connection failed"}
         except Exception as e:
-            return {"status": "error"}
+            print(f"ERROR: Unexpected error in send_event: {e}")
+            return {"status": "error", "message": str(e)}
     
     def register_person(self, name: Optional[str], images: List[np.ndarray]) -> dict:
         """Register new person"""
@@ -104,6 +133,25 @@ class ServerClient:
                 return {"status": "error"}
         except Exception as e:
             return {"status": "error"}
+    
+    def update_person_name(self, person_id: str, name: str) -> dict:
+        """Update a person's name (for unlabeled persons that get labeled)"""
+        try:
+            response = self.session.post(
+                f"{self.server_url}/api/person/{person_id}/update",
+                json={
+                    'name': name,
+                    'rpi_id': self.rpi_id
+                },
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return {"status": "error", "message": f"HTTP {response.status_code}"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
     
     def send_stream_frame(self, frame: np.ndarray, quality: int = 70) -> bool:
         """Send single frame for live streaming to dashboard"""

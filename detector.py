@@ -15,13 +15,13 @@ class PersonDetector:
         self.detection_scale = detection_scale
         self.confidence = confidence
         
-        print(f"🧠 Loading YOLOv8n from {model_path}...")
+        # Loading YOLO model (silent)
         self.session = ort.InferenceSession(
             str(model_path),
             providers=['CPUExecutionProvider']
         )
         self.input_name = self.session.get_inputs()[0].name
-        print("✅ YOLOv8n loaded")
+        # YOLO model loaded
     
     def preprocess(self, image: np.ndarray) -> np.ndarray:
         """Preprocess image for YOLO"""

@@ -1,25 +1,33 @@
-# Raspberry Pi Tracker Configuration - Headless Mode
+# Raspberry Pi Tracker Configuration - Motion-Optimized Headless Mode
 
 # Server connection
 server:
-  url: "http://192.168.4.215:8000"  # CHANGE THIS TO YOUR SERVER IP!
+  # Production server (default for RPi)
+  url: "https://officeserver-production.up.railway.app"
+  # Local development server (use with --debug flag)
+  # Use your Mac's IP address, not localhost (localhost on RPi = RPi itself, not Mac)
+  local_url: "http://192.168.4.215:8000"
   rpi_id: "default"
   heartbeat_interval: 30  # Seconds between heartbeats
-  command_poll_interval: 2  # Seconds between command checks
+  command_poll_interval: 5  # Seconds between command checks (reduced frequency to avoid overwhelming dashboard)
 
 # Camera settings
 camera:
   width: 2304
   height: 1296
   fps: 30  # High capture FPS for quality
-  stream_fps: 5  # FPS for dashboard streaming (very low - saves bandwidth)
+  stream_fps: 2  # FPS for dashboard streaming (reduced to prevent overwhelming server connections)
   stream_quality: 50  # JPEG quality for streaming (0-100, lower = smaller files)
   
 # Detection settings
 detection:
   scale: 0.25  # Heavy downscale for YOLO (576x324 detection size)
   confidence: 0.5
-  check_interval: 1.0  # Check every 1 second only
+  check_interval: 1.0  # Check every 1 second only (legacy - kept for compatibility)
+  motion_check_interval: 1.0  # NEW - Motion detection interval (recommended: 0.5-2.0)
+                               # 0.5 = More responsive, catches fast movement
+                               # 1.0 = Balanced (recommended)
+                               # 2.0 = Ultra low power, might miss fast movement
 
 # Tripwires (managed by server, but stored locally as fallback)
 tripwires:

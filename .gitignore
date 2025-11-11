@@ -1,0 +1,9 @@
+models/
+models/*
+__pycache__
+teo
+teo/
+teo/*
+models
+yolov8n.pt
+
