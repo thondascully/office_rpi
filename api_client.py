@@ -7,6 +7,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import numpy as np
+import json
+from pathlib import Path
 from typing import List, Optional, Dict
 from datetime import datetime
 
@@ -17,6 +19,9 @@ class ServerClient:
         self.server_url = server_url.rstrip('/')
         self.rpi_id = rpi_id
         self.session = requests.Session()  # Reuse connections
+        
+        # Event persistence path
+        self.failed_events_path = Path('/tmp/rpi_events_failed.jsonl')
         
         # Configure connection pooling to prevent overwhelming the server
         # Limit to 2 connections per host to avoid connection exhaustion
@@ -63,6 +68,22 @@ class ServerClient:
             pass
         return None
     
+    def _persist_failed_event(self, direction: str, image_count: int, error: str):
+        """Write failed event to disk for retry (only on failure, ~1ms overhead)"""
+        try:
+            event_data = {
+                'timestamp': datetime.now().isoformat(),
+                'direction': direction,
+                'rpi_id': self.rpi_id,
+                'image_count': image_count,
+                'error': error
+            }
+            with open(self.failed_events_path, 'a') as f:
+                f.write(json.dumps(event_data) + '\n')
+        except Exception as e:
+            # Silent fail on persistence (don't crash if disk full)
+            pass
+    
     def send_event(self, direction: str, images: List[np.ndarray]) -> dict:
         """Send detection event to server"""
         files = []
@@ -90,20 +111,35 @@ class ServerClient:
                 try:
                     return response.json()
                 except Exception as e:
+                    error_msg = f"JSON parse error: {e}"
                     print(f"ERROR: Failed to parse server response: {e}")
-                    return {"status": "error", "message": f"JSON parse error: {e}"}
+                    # Persist failed event
+                    self._persist_failed_event(direction, len(images), error_msg)
+                    return {"status": "error", "message": error_msg}
             else:
+                error_msg = f"HTTP {response.status_code}"
                 print(f"ERROR: Server returned status {response.status_code}")
-                return {"status": "error", "message": f"HTTP {response.status_code}"}
+                # Persist failed event
+                self._persist_failed_event(direction, len(images), error_msg)
+                return {"status": "error", "message": error_msg}
         except requests.exceptions.Timeout:
+            error_msg = "Request timeout"
             print("ERROR: Request to server timed out")
-            return {"status": "error", "message": "Request timeout"}
+            # Persist failed event
+            self._persist_failed_event(direction, len(images), error_msg)
+            return {"status": "error", "message": error_msg}
         except requests.exceptions.ConnectionError as e:
+            error_msg = f"Connection failed: {e}"
             print(f"ERROR: Connection to server failed: {e}")
+            # Persist failed event
+            self._persist_failed_event(direction, len(images), error_msg)
             return {"status": "error", "message": "Connection failed"}
         except Exception as e:
+            error_msg = str(e)
             print(f"ERROR: Unexpected error in send_event: {e}")
-            return {"status": "error", "message": str(e)}
+            # Persist failed event
+            self._persist_failed_event(direction, len(images), error_msg)
+            return {"status": "error", "message": error_msg}
     
     def register_person(self, name: Optional[str], images: List[np.ndarray]) -> dict:
         """Register new person"""

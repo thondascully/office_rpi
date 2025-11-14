@@ -26,7 +26,7 @@ from datetime import datetime
 from camera import Camera
 from detector import PersonDetector
 from api_client import ServerClient
-from motion_detector import MotionDetector  # Simple fixed-threshold detector
+from motion_detector import MultiScaleMotionDetector  # Multi-scale with adaptive sensitivity
 
 # Parse arguments FIRST
 parser = argparse.ArgumentParser()
@@ -51,7 +51,7 @@ config = load_config()
 
 # Configuration - Use Mac's IP in debug mode, production otherwise
 if DEBUG_MODE:
-    SERVER_URL = config['server'].get('local_url', 'http://192.168.4.215:8000')
+    SERVER_URL = config['server'].get('local_url', 'http://10.1.10.42:8000')
     print(f"DEBUG MODE: Using local development server: {SERVER_URL}")
 else:
     SERVER_URL = config['server']['url']
@@ -118,6 +118,53 @@ class InputHandler:
     
     def stop(self):
         self.running = False
+
+# Health Monitor - Track system metrics
+class HealthMonitor:
+    """Track basic health metrics (uptime, YOLO calls, events)"""
+    
+    def __init__(self):
+        self.start_time = time.time()
+        self.last_yolo_time = 0
+        self.last_heartbeat_time = 0
+        self.last_event_time = 0
+        self.yolo_count = 0
+        self.event_count = 0
+        self.last_status_log = 0
+    
+    def record_yolo(self):
+        """Record YOLO detection call"""
+        self.last_yolo_time = time.time()
+        self.yolo_count += 1
+    
+    def record_heartbeat(self):
+        """Record heartbeat"""
+        self.last_heartbeat_time = time.time()
+    
+    def record_event(self):
+        """Record event sent"""
+        self.last_event_time = time.time()
+        self.event_count += 1
+    
+    def get_status(self) -> dict:
+        """Get current health status"""
+        current_time = time.time()
+        return {
+            'uptime': int(current_time - self.start_time),
+            'yolo_calls': self.yolo_count,
+            'events_sent': self.event_count,
+            'last_yolo_ago': current_time - self.last_yolo_time if self.last_yolo_time > 0 else 0,
+            'last_heartbeat_ago': current_time - self.last_heartbeat_time if self.last_heartbeat_time > 0 else 0,
+            'last_event_ago': current_time - self.last_event_time if self.last_event_time > 0 else 0
+        }
+    
+    def log_status(self, interval: float = 300.0):
+        """Log status periodically (default every 5 minutes)"""
+        current_time = time.time()
+        if current_time - self.last_status_log >= interval:
+            status = self.get_status()
+            print(f"[HEALTH] Uptime: {status['uptime']}s | YOLO: {status['yolo_calls']} | Events: {status['events_sent']}")
+            self.last_status_log = current_time
 
 # Debug display functions (only used if --display flag)
 def draw_calibration_overlay(frame, outer_x, inner_x):
@@ -187,9 +234,10 @@ def main():
     server = ServerClient(SERVER_URL, RPI_ID)
     input_handler = InputHandler()
     input_handler.start()
+    health_monitor = HealthMonitor()
     
-    # Initialize motion detector (simple fixed threshold - MAE > 75 triggers YOLO)
-    motion_detector = MotionDetector(
+    # Initialize multi-scale motion detector (adaptive sensitivity + multi-scale)
+    motion_detector = MultiScaleMotionDetector(
         tripwire_outer_x=TRIPWIRE_OUTER_X,
         tripwire_inner_x=TRIPWIRE_INNER_X,
         frame_width=CAMERA_WIDTH,
@@ -237,7 +285,11 @@ def main():
             # Send heartbeat (always send, even when disabled)
             if current_time - last_heartbeat >= config['server']['heartbeat_interval']:
                 server.send_heartbeat(mode, uptime)
+                health_monitor.record_heartbeat()
                 last_heartbeat = current_time
+            
+            # Log health status periodically
+            health_monitor.log_status(interval=300.0)  # Every 5 minutes
             
             # Check for dashboard commands (always check, even when system disabled)
             # Poll less frequently when streaming to reduce server load
@@ -355,9 +407,14 @@ def main():
                     registration_count = 0
                     mode = "streaming" if streaming_mode else "idle"
             
-            # BURST CAPTURE MODE
+            # BURST CAPTURE MODE - Optimized timing (capture first image immediately)
             elif mode == "burst":
-                if current_time - last_burst_time >= BURST_INTERVAL:
+                if burst_count == 0:
+                    # First image: capture immediately (no delay) - Better capture timing optimization
+                    burst_images.append(frame.copy())
+                    burst_count = 1
+                    last_burst_time = current_time
+                elif current_time - last_burst_time >= BURST_INTERVAL * 0.5:  # 100ms for rest (vs 200ms)
                     burst_images.append(frame.copy())
                     burst_count += 1
                     last_burst_time = current_time
@@ -372,6 +429,7 @@ def main():
                             name = result.get('name', 'Unknown')
                             similarity = result.get('similarity', 0)
                             timestamp = datetime.now().strftime('%H:%M:%S')
+                            health_monitor.record_event()
                             if name:
                                 print(f"[{timestamp}] Recognized: {name} ({person_id}) - {similarity:.1%}")
                             else:
@@ -379,6 +437,7 @@ def main():
                         elif result.get('status') == 'unknown_registered':
                             person_id = result.get('person_id')
                             timestamp = datetime.now().strftime('%H:%M:%S')
+                            health_monitor.record_event()
                             print(f"[{timestamp}] Unknown person registered: {person_id}")
                         else:
                             error_msg = result.get('message', 'Unknown error')
@@ -402,23 +461,28 @@ def main():
                     
                     # Only run YOLO if motion detected in zone (motion detector already samples zone)
                     if should_run_yolo:
-                        detections = detector.detect(frame)
-                        
-                        # Check if anyone in zone
-                        people_in_zone = False
-                        for x, y, w, h, conf in detections:
-                            center_x = x + w // 2
-                            if TRIPWIRE_OUTER_X < center_x < TRIPWIRE_INNER_X:
-                                people_in_zone = True
-                                break
-                        
-                        if people_in_zone and (current_time - last_event_time >= EVENT_COOLDOWN):
-                            timestamp = datetime.now().strftime('%H:%M:%S')
-                            print(f"[{timestamp}] Person detected - starting capture")
-                            mode = "burst"
-                            burst_images = [frame.copy()]
-                            burst_count = 1
-                            last_burst_time = current_time
+                        # Optimized YOLO trigger: quick check first, then full detection
+                        health_monitor.record_yolo()  # Count quick_check as YOLO call
+                        if detector.quick_check(frame):  # Fast check (~50ms)
+                            detections = detector.detect(frame)  # Full detection (~200ms)
+                            health_monitor.record_yolo()  # Count full detect as YOLO call
+                            
+                            # Check if anyone in zone
+                            people_in_zone = False
+                            for x, y, w, h, conf in detections:
+                                center_x = x + w // 2
+                                if TRIPWIRE_OUTER_X < center_x < TRIPWIRE_INNER_X:
+                                    people_in_zone = True
+                                    break
+                            
+                            if people_in_zone and (current_time - last_event_time >= EVENT_COOLDOWN):
+                                timestamp = datetime.now().strftime('%H:%M:%S')
+                                print(f"[{timestamp}] Person detected - starting capture")
+                                mode = "burst"
+                                burst_images = [frame.copy()]  # Capture first image immediately
+                                burst_count = 1
+                                last_burst_time = current_time
+                        # else: Quick check didn't find person, skip full YOLO (saves ~200ms)
             
             # Display (only if --display flag enabled)
             if DISPLAY_ENABLED:

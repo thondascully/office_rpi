@@ -6,7 +6,7 @@ server:
   url: "https://officeserver-production.up.railway.app"
   # Local development server (use with --debug flag)
   # Use your Mac's IP address, not localhost (localhost on RPi = RPi itself, not Mac)
-  local_url: "http://192.168.4.215:8000"
+  local_url: "http://10.1.10.42:8000"
   rpi_id: "default"
   heartbeat_interval: 30  # Seconds between heartbeats
   command_poll_interval: 5  # Seconds between command checks (reduced frequency to avoid overwhelming dashboard)
